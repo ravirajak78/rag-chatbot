@@ -277,7 +277,7 @@ QUESTION:
 
     sources_block = "\n".join(sources_block_lines) if sources_block_lines else "No supporting sources found."
 
-    assistant_full = f"{answer_text}\n\n📄 **Sources & snippets used:**\n{sources_block}"
+    assistant_full = f"{answer_text}\n\n📄 **Sources & snippets used:**\n"
 
     st.session_state.messages.append({"role":"assistant","content":assistant_full})
     st.rerun()
