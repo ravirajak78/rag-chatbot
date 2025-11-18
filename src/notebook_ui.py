@@ -1,3 +1,4 @@
+# src/notebook_ui.py
 import streamlit as st
 import os
 import tempfile
@@ -25,60 +26,26 @@ DATA_DIR.mkdir(exist_ok=True)
 st.markdown(
     """
 <style>
-    .block-container { padding-top: 1rem; }
-
-    /* chat wrapper (center column) */
-    .chat-wrapper {
-        background: #fff;
-        border-radius: 12px;
-        padding: 15px;
-        min-height: 62vh;
-        max-height: 62vh;
-        overflow-y: auto;
-        box-shadow: 0 0 8px rgba(0,0,0,0.08);
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-    }
-
-    .chat-message {
-        margin: 6px 0;
-        padding: 10px 12px;
-        border-radius: 10px;
-        max-width: 85%;
-        word-wrap: break-word;
-        white-space: pre-wrap;
-        line-height: 1.4;
-    }
-
-    .user-msg {
-        background: #d9e8ff;
-        align-self: flex-end;
-        text-align: right;
-    }
-
-    .bot-msg {
-        background: #f2f4f7;
-        align-self: flex-start;
-    }
-
-    .studio-card {
-        background: #fff;
-        border-radius: 12px;
-        padding: 12px;
-        margin-bottom: 10px;
-        box-shadow: 0 0 6px rgba(0,0,0,0.04);
-        white-space: pre-wrap;
-    }
-
-    /* visual container to center the chat input under the center column */
-    .centered-input-wrapper {
-        max-width: 900px;  /* adjust to match center column visual width */
-        margin: 8px auto 36px auto; /* center and give bottom spacing */
-        display: flex;
-        gap: 8px;
-        align-items: center;
-    }
+.block-container { padding-top: 1rem; }
+.chat-wrapper {
+    background: #fff;
+    border-radius: 12px;
+    padding: 15px;
+    min-height: 62vh;
+    max-height: 62vh;
+    overflow-y: auto;
+    box-shadow: 0 0 8px rgba(0,0,0,0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.chat-message { margin: 6px 0; padding: 10px 12px; border-radius: 10px; max-width: 85%; word-wrap: break-word; white-space: pre-wrap; line-height: 1.4; }
+.user-msg { background: #d9e8ff; align-self: flex-end; text-align: right; }
+.bot-msg { background: #f2f4f7; align-self: flex-start; }
+.studio-card { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 10px; box-shadow: 0 0 6px rgba(0,0,0,0.04); white-space: pre-wrap; }
+.centered-input-wrapper { max-width: 900px; margin: 8px auto 36px auto; display: flex; gap: 8px; align-items: center; }
+.source-list { font-size: 0.95em; margin-top:8px; color:#333;}
+.source-item { padding:8px; border-radius:8px; background:#fafafa; margin-bottom:6px; box-shadow:0 0 3px rgba(0,0,0,0.03); }
 </style>
 """,
     unsafe_allow_html=True,
@@ -86,51 +53,32 @@ st.markdown(
 
 # ========== HELPERS: embedding + LLM ==========
 def get_embedding(text: str) -> List[float]:
-    """
-    Use Gemini embeddings via google.generativeai.embed_content.
-    Returns the embedding vector (list of floats).
-    """
     resp = embed_content(model="models/text-embedding-004", content=text)
     emb = resp.get("embedding")
     if emb is None:
         raise RuntimeError("Embedding API returned no embedding.")
     return emb
 
-
 def safe_gemini_response(response) -> str:
-    """
-    Extract text safely from various Gemini response shapes.
-    """
     try:
-        # prefer quick accessor
         if hasattr(response, "text") and response.text:
             return response.text.strip()
-
-        # fallback to candidates / parts
         if hasattr(response, "candidates") and response.candidates:
             cand = response.candidates[0]
             if getattr(cand, "content", None) and getattr(cand.content, "parts", None):
                 part = cand.content.parts[0]
                 return getattr(part, "text", "").strip() or "⚠️ Empty part text."
-
         return "⚠️ The model returned no usable text (possibly blocked)."
     except Exception as e:
         return f"⚠️ Error extracting model response: {e}"
 
-
 def generate_with_gemini(prompt: str, temperature: float = 0.2) -> str:
-    """
-    Call Gemini generate_content and return safe text.
-    """
     try:
         model = genai.GenerativeModel("models/gemini-2.5-flash")
-        response = model.generate_content(
-            prompt, generation_config={"temperature": temperature, "max_output_tokens": 900}
-        )
+        response = model.generate_content(prompt, generation_config={"temperature": temperature, "max_output_tokens": 900})
         return safe_gemini_response(response)
     except Exception as e:
         return f"⚠️ Gemini API error: {e}"
-
 
 # -------- DOCUMENT READERS / CHUNKER --------
 def read_pdf(file_path: Path) -> str:
@@ -142,253 +90,201 @@ def read_pdf(file_path: Path) -> str:
             text += t + "\n"
     return text
 
-
 def read_docx(file_path: Path) -> str:
     doc = docx.Document(str(file_path))
     return "\n".join(p.text for p in doc.paragraphs)
-
 
 def read_txt(file_path: Path) -> str:
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
-
 def chunk_text(text: str) -> List[str]:
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=60)
     return splitter.split_text(text)
 
-
 # -------- FAISS / STORE MANAGEMENT --------
 def ensure_faiss_state():
-    """
-    Initialize FAISS index and docstore in session state if not present.
-    We'll initialize index after we know embedding dimension.
-    """
     if "faiss_index" not in st.session_state:
         st.session_state.faiss_index = None
     if "faiss_dim" not in st.session_state:
         st.session_state.faiss_dim = None
     if "docstore" not in st.session_state:
-        # list of dict: {"id": str, "chunk": str, "source": str, "meta": {}}
-        st.session_state.docstore = []
-
+        st.session_state.docstore = []  # list of {"id","chunk","source","chunk_index"}
 
 def add_embeddings_to_faiss(embeddings: List[List[float]], chunks: List[str], source: str):
-    """
-    Add embeddings and their chunks to FAISS index and docstore.
-    """
     ensure_faiss_state()
     if not embeddings:
         return
-
-    # convert to numpy float32
     arr = np.array(embeddings, dtype="float32")
     dim = arr.shape[1]
-
-    # initialize index if needed
     if st.session_state.faiss_index is None:
         st.session_state.faiss_index = faiss.IndexFlatL2(dim)
         st.session_state.faiss_dim = dim
     elif st.session_state.faiss_dim != dim:
-        # embedding dim mismatch — raise an error
-        raise RuntimeError(f"Embedding dimension mismatch: existing={st.session_state.faiss_dim}, new={dim}")
-
-    # add vectors
+        raise RuntimeError(f"Embedding dim mismatch: {st.session_state.faiss_dim} vs {dim}")
     st.session_state.faiss_index.add(arr)
-
-    # update docstore with metadata in same order
     start_idx = len(st.session_state.docstore)
     for i, chunk in enumerate(chunks):
-        st.session_state.docstore.append(
-            {"id": f"{source}_{start_idx + i}", "chunk": chunk, "source": source, "meta": {}}
-        )
+        st.session_state.docstore.append({"id": f"{source}_{start_idx + i}", "chunk": chunk, "source": source, "chunk_index": start_idx + i})
 
-
-def query_faiss(query_embedding: List[float], top_k: int = 5, source_filter: Optional[str] = None) -> List[Dict]:
-    """
-    Query the FAISS index and return top_k docstore items (respecting optional source filter).
-    If a source_filter is provided we will filter results to that source.
-    """
+def query_faiss(query_embedding: List[float], top_k: int = 8) -> List[Dict]:
     ensure_faiss_state()
     if st.session_state.faiss_index is None:
         return []
-
     q = np.array(query_embedding, dtype="float32").reshape(1, -1)
-
-    # search
     D, I = st.session_state.faiss_index.search(q, top_k)
     indices = I[0].tolist()
-
-    # Collect retrieved items, apply source filter if needed
     results = []
     for idx in indices:
         if idx < 0 or idx >= len(st.session_state.docstore):
             continue
-        item = st.session_state.docstore[idx]
-        if source_filter and item.get("source") != source_filter:
-            continue
-        results.append(item)
+        results.append(st.session_state.docstore[idx])
     return results
 
-
-# -------- SESSION INIT & UI START --------
+# -------- INIT SESSION ----------
 ensure_faiss_state()
-
 if "messages" not in st.session_state:
-    st.session_state.messages = []  # {"role":"user"/"assistant", "content": "..."}
+    st.session_state.messages = []
 if "uploaded_docs" not in st.session_state:
-    st.session_state.uploaded_docs = []  # list of filenames
+    st.session_state.uploaded_docs = []
 if "active_doc" not in st.session_state:
     st.session_state.active_doc = None
 
 st.title("💬 RAG Chatbot App")
-st.caption("Built by *Ravi Rajak* | NotebookLM-style RAG")
+st.caption("Built by *Ravi Rajak* — answers with source snippets")
 
 col_sources, col_chat, col_studio = st.columns([1.5, 2.5, 1.5])
 
-# ---------------- LEFT PANEL: Upload & Sources ----------------
+# ---------------- LEFT: upload & select ---------------
 with col_sources:
     st.header("📚 Upload & Sources")
-    uploaded_files = st.file_uploader(
-        "Upload up to 20 documents (pdf/docx/txt)",
-        type=["pdf", "docx", "txt"],
-        accept_multiple_files=True,
-    )
-
+    uploaded_files = st.file_uploader("Upload up to 20 documents (pdf/docx/txt)", type=["pdf","docx","txt"], accept_multiple_files=True)
     if uploaded_files:
         for file in uploaded_files[:20]:
             save_path = DATA_DIR / file.name
             with open(save_path, "wb") as f:
                 f.write(file.read())
-
             if file.name not in st.session_state.uploaded_docs:
                 st.session_state.uploaded_docs.append(file.name)
-
-            # read
             ext = file.name.split(".")[-1].lower()
             text = read_pdf(save_path) if ext == "pdf" else read_docx(save_path) if ext == "docx" else read_txt(save_path)
-
-            # chunk -> embed (embedding per chunk)
             chunks = chunk_text(text)
             embeddings = []
             for chunk in chunks:
                 try:
-                    emb = get_embedding(chunk)
-                    embeddings.append(emb)
+                    embeddings.append(get_embedding(chunk))
                 except Exception as e:
                     st.error(f"Embedding failed for a chunk: {e}")
-                    # append zero-vector placeholder of length if available
                     if st.session_state.faiss_dim:
-                        embeddings.append([0.0] * st.session_state.faiss_dim)
+                        embeddings.append([0.0]*st.session_state.faiss_dim)
                     else:
-                        # if we don't know dim yet, try to skip this chunk
                         embeddings.append([0.0])
-
-            # add to faiss/docstore
             add_embeddings_to_faiss(embeddings, chunks, file.name)
-
         st.success("✅ Files uploaded & indexed!")
-
-    # Active document selection
     if st.session_state.uploaded_docs:
-        st.session_state.active_doc = st.selectbox(
-            "📄 Currently Working On",
-            st.session_state.uploaded_docs,
-            index=0 if st.session_state.active_doc is None else st.session_state.uploaded_docs.index(st.session_state.active_doc),
-        )
+        st.session_state.active_doc = st.selectbox("📄 Currently Working On", st.session_state.uploaded_docs, index=0 if st.session_state.active_doc is None else st.session_state.uploaded_docs.index(st.session_state.active_doc))
     else:
         st.info("Upload documents to get started.")
 
-# ---------------- CENTER PANEL: Chat (render messages) ----------------
+# ---------------- CENTER: chat display ----------------
 with col_chat:
     st.header("💬 Chat")
     chat_box = st.empty()
-
-    # Build chat HTML
     html = "<div class='chat-wrapper' id='chat-box'>"
     for msg in st.session_state.messages:
-        cls = "user-msg" if msg["role"] == "user" else "bot-msg"
-        sender = "🧑‍💻 You" if msg["role"] == "user" else "🤖 Bot"
-        content = str(msg["content"]).replace("\n", "<br>")
+        cls = "user-msg" if msg["role"]=="user" else "bot-msg"
+        sender = "🧑‍💻 You" if msg["role"]=="user" else "🤖 Bot"
+        content = str(msg["content"]).replace("\n","<br>")
         html += f"<div class='chat-message {cls}'><b>{sender}:</b><br>{content}</div>"
     html += "</div>"
-
     chat_box.markdown(html, unsafe_allow_html=True)
-
-    # Auto-scroll script
-    st.markdown(
-        """
+    st.markdown("""
     <script>
-        (function() {
-            try {
-                const parent = window.parent.document;
-                const box = parent.querySelector('#chat-box');
-                if (box) { box.scrollTop = box.scrollHeight; }
-            } catch(e) {}
-        })();
+    (function(){ try { const parent = window.parent.document; const box = parent.querySelector('#chat-box'); if (box) box.scrollTop = box.scrollHeight; } catch(e){} })()
     </script>
-    """,
-        unsafe_allow_html=True,
-    )
-
+    """, unsafe_allow_html=True)
     st.markdown("---")
 
-# ---------------- Chat input (ROOT level, visually centered) ----------------
+# ---------------- chat input (root level, visually centered) ----------------
 st.markdown("<div class='centered-input-wrapper'>", unsafe_allow_html=True)
-
-# Chat input must be at root level — Streamlit requirement
 user_input = st.chat_input("Ask a question...")
-
-# Provide clear button visually to the right
-col_for_clear = st.columns([1, 1, 1, 1, 1])[4]
+col_for_clear = st.columns([1,1,1,1,1])[4]
 with col_for_clear:
     if st.button("🧹 Clear"):
         st.session_state.messages = []
         st.experimental_rerun()
-
 st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------------- Process user query ----------------
+# ---------------- process user query and produce answer + sources (detailed) ----------------
 if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-
-    # Create query embedding
+    st.session_state.messages.append({"role":"user","content":user_input})
     try:
-        query_emb = get_embedding(user_input)
+        q_emb = get_embedding(user_input)
     except Exception as e:
         st.error(f"Failed to create query embedding: {e}")
-        query_emb = None
+        q_emb = None
 
-    retrieved_text = ""
-    if query_emb is not None and st.session_state.faiss_index is not None:
-        # If specific doc selected, apply filter after nearest neighbor search (FAISS doesn't support metadata filtering)
-        results = query_faiss(query_emb, top_k=8, source_filter=st.session_state.active_doc)
-        if not results and st.session_state.active_doc:
-            # If filter removed all results, try unfiltered fallback
-            results = query_faiss(query_emb, top_k=5, source_filter=None)
+    retrieved = []
+    if q_emb is not None:
+        # get nearest neighbors
+        hits = query_faiss(q_emb, top_k=10)
+        # apply active_doc filter client-side and keep order
+        if st.session_state.active_doc:
+            hits = [h for h in hits if h.get("source")==st.session_state.active_doc]
+            if not hits:
+                # fallback to unfiltered if none after filter
+                hits = query_faiss(q_emb, top_k=5)
+        retrieved = hits[:6]  # keep top 6 chunks
 
-        # join top chunks
-        retrieved_text = "\n\n".join([r["chunk"] for r in results[:5]]) if results else ""
+    # Build RAG prompt using retrieved chunks
+    context_pieces = []
+    for item in retrieved:
+        t = item.get("chunk","")
+        context_pieces.append(t)
+    context_for_prompt = "\n\n".join(context_pieces) if context_pieces else ""
 
-    prompt = f"""Use ONLY the following document context to answer. If the answer is not present, reply exactly: "Not found in document."
+    prompt = f"""You are an assistant that MUST answer using only the given CONTEXT. If the answer cannot be found in the context, reply exactly: "Not found in document."
 
 CONTEXT:
-{retrieved_text}
+{context_for_prompt}
 
 QUESTION:
 {user_input}
 """
+    answer_text = generate_with_gemini(prompt)
 
-    answer = generate_with_gemini(prompt)
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    # Build a structured source attribution (detailed with snippets)
+    # aggregate unique sources in order of appearance
+    sources_ordered = []
+    source_snips = {}
+    for item in retrieved:
+        src = item.get("source")
+        idx = item.get("chunk_index")
+        chunk_text = item.get("chunk","")
+        if src not in source_snips:
+            # snippet: first 150 chars (trim)
+            snippet = chunk_text.strip().replace("\n"," ")
+            snippet = (snippet[:150] + "...") if len(snippet) > 150 else snippet
+            source_snips[src] = {"snippet": snippet, "chunk_index": idx}
+            sources_ordered.append(src)
 
-    # rerun to update UI and scroll
+    # Compose assistant message content: answer + Sources block with snippet previews
+    sources_block_lines = []
+    for s in sources_ordered:
+        ci = source_snips[s]["chunk_index"]
+        snip = source_snips[s]["snippet"]
+        sources_block_lines.append(f"- **{s}** (chunk #{ci}): \"{snip}\"")
+
+    sources_block = "\n".join(sources_block_lines) if sources_block_lines else "No supporting sources found."
+
+    assistant_full = f"{answer_text}\n\n📄 **Sources & snippets used:**\n{sources_block}"
+
+    st.session_state.messages.append({"role":"assistant","content":assistant_full})
     st.experimental_rerun()
 
-# ---------------- RIGHT PANEL: Studio Tools ----------------
+# ---------------- RIGHT: Studio Tools ----------------
 with col_studio:
     st.header("🎛️ Studio Tools")
-
     if st.button("🧠 Summary"):
         if not st.session_state.active_doc:
             st.info("Select an active document first.")
