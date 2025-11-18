@@ -212,7 +212,7 @@ col_for_clear = st.columns([1,1,1,1,1])[4]
 with col_for_clear:
     if st.button("🧹 Clear"):
         st.session_state.messages = []
-        st.experimental_rerun()
+        st.rerun()
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ---------------- process user query and produce answer + sources (detailed) ----------------
@@ -280,7 +280,7 @@ QUESTION:
     assistant_full = f"{answer_text}\n\n📄 **Sources & snippets used:**\n{sources_block}"
 
     st.session_state.messages.append({"role":"assistant","content":assistant_full})
-    st.experimental_rerun()
+    st.rerun()
 
 # ---------------- RIGHT: Studio Tools ----------------
 with col_studio:
